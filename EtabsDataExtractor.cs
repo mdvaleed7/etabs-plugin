@@ -178,7 +178,7 @@ namespace CSiNET8PluginExample1
                 slab.LiveLoad              = ll;
                 slab.SuperimposedDeadLoad  = sdl;
 
-                // ── Slab type: classify by Ly/Lx ──────────────────────────────
+                // Slab type: classify by Ly/Lx initially
                 if (slab.Lx > 0 && slab.Ly > 0)
                 {
                     slab.Type = slab.Ly / slab.Lx > 2.0
@@ -186,13 +186,12 @@ namespace CSiNET8PluginExample1
                         : SlabType.TwoWay;
                 }
 
-                // BoundaryCase defaults to 1 (interior panel). The actual boundary
-                // condition cannot be determined from geometry alone in the general
-                // case — this requires user input or a separate edge-condition pass.
-                slab.BoundaryCase = 1;
-
                 slabs.Add(slab);
             }
+
+            // --- Run Geometric Topology Analysis ---
+            var analyzer = new GeometricTopologyAnalyzer(_sapModel, lenToM);
+            analyzer.AnalyzeSlabs(slabs);
 
             return slabs;
         }

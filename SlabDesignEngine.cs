@@ -6,6 +6,12 @@ namespace CSiNET8PluginExample1
     {
         public static void DesignSlab(SlabData slab)
         {
+            if (slab.Type == SlabType.FlatSlab)
+            {
+                slab.DesignStatus = "FLAT SLAB";
+                slab.Notes = "Flat Slabs require Equivalent Frame or Direct Design Method. Table 26 deflection limits do not apply directly.";
+                return;
+            }
 
             double selfWeight = (slab.Thickness / 1000.0) * 25.0; // kN/m2
             double totalDL = selfWeight + slab.DeadLoad + slab.SuperimposedDeadLoad;
