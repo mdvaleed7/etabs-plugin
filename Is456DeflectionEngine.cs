@@ -5,186 +5,155 @@ namespace CSiNET8PluginExample1
     /// <summary>
     /// IS 456:2000 Annex C deflection engine.
     ///
-    /// CORRECTIONS applied vs. the original version:
-    ///
-    /// 1. Self-weight omission (now fixed in SlabDesignEngine — engine receives
-    ///    the correct M_service and M_perm).
-    ///
-    /// 2. Long-term deflection formula (CRITICAL):
-    ///    The original code used a crude multiplier (a_LT = ai × 1.5 → a_total = 2.5 ai).
-    ///    IS 456 Annex C requires:
-    ///      (a) Creep deflection: a_cc = a(perm,Ie2) − a(perm,Ie1)
-    ///          where Ie1 uses Ec and Ie2 uses Ec / (1 + θ).  IS 456 Cl. 6.2.5.1:
-    ///          θ = creep coefficient = 1.6 (28-day loading per Cl. 6.2.5.1, default).
-    ///      (b) Shrinkage deflection: a_s = k3 × ε_cs × L² / D
-    ///          IS 456 Annex C Eq. (C-5): k3 = 0.5 (cantilever), 0.125 (SS), 0.083 (cont.)
-    ///          ε_cs = unit shrinkage strain = 0.0003 (IS 456 Cl. 6.2.4.1 — for w/c ≤ 0.50)
-    ///    This implementation now uses proper Annex C creep and shrinkage formulations.
-    ///
-    /// 3. Allowable deflection (IS 456 Cl. 23.2):
-    ///    Two limits must both be satisfied:
-    ///      Limit A: total deflection ≤ L/250
-    ///      Limit B: deflection after partition/finish ≤ L/350 or 20 mm (lesser)
-    ///    The check in CheckAndOptimizeThickness now enforces both.
-    ///
-    /// 4. Alpha coefficient for continuous slab (BoundaryCase 1):
-    ///    Short-term deflection formula: ai = α × M_s × L² / (Ec × Ieff)
-    ///    For an interior panel the mid-span bending moment governs short-term
-    ///    deflection; using the positive BM (M_pos = 0.024 w Lx²) and the
-    ///    corresponding coefficient:
-    ///      α = 5/48 (simply supported — upper bound)
-    ///      α = 1/96 (both ends fully fixed — theoretically from wL⁴/384EI
-    ///                expressed as M_pos × L² / (EI); M_pos = wL²/24 → α = 1/24 × 1/4
-    ///                but midspan moment used as M_pos above is wL²/12 for interior
-    ///                so α = 1/48 gives wL⁴/384EI ≡ (wL²/12)×L²/(48EI).)
-    ///    The code below uses α = 1/48 for the continuous case (BoundaryCase 1)
-    ///    which is the correct coefficient when M_service = positive service moment.
-    ///    The previous value of 1/16 would have overestimated deflection by 3×.
-    ///
-    /// 5. fck and fy are now passed explicitly rather than hardcoded.
+    /// PATCH NOTES (v2):
+    ///  1. d is now derived from slab.Cover and slab.BarDiaMain instead of
+    ///     hard-coded 20 + 5.  Keeps it in sync with the design engine.
+    ///  2. Shrinkage deflection now uses the proper IS 456 Annex C Eq. C-3:
+    ///         a_cs = k3 · k4 · ε_cs · L² / D
+    ///     where k4 depends on (pt − pc):
+    ///         k4 = 0.72 (pt − pc)/√pt        for 0.25 ≤ pt − pc < 1.0
+    ///         k4 = 0.65 (pt − pc)/√pt        for pt − pc ≥ 1.0
+    ///         k4 ≤ 1.0
+    ///     The previous version folded k4 into k3 by constant, which over-
+    ///     estimated shrinkage deflection for lightly reinforced sections.
+    ///  3. Creep deflection a_cc = a(perm,Ec_eff) − a(perm,Ec) is unchanged
+    ///     (Annex C Eq. C-2 with θ = 1.6).
+    ///  4. Two allowable limits (Cl. 23.2) — L/250 total and min(L/350, 20 mm)
+    ///     post-construction — both must be satisfied.
     /// </summary>
     public class Is456DeflectionEngine
     {
-        // IS 456 Cl. 6.2.3.1: Ec = 5000 √fck (MPa)
+        /// <summary>IS 456 Cl. 6.2.3.1: Ec = 5000 √fck (MPa).</summary>
         public static double GetEc(double fck) => 5000.0 * Math.Sqrt(fck);
 
-        // IS 456 Cl. 6.2.5.1: creep coefficient θ for age of loading ≥ 28 days
+        /// <summary>IS 456 Cl. 6.2.5.1: creep coefficient for ≥28-day loading.</summary>
         private const double CREEP_COEFF = 1.6;
 
-        // IS 456 Cl. 6.2.4.1: design ultimate shrinkage strain
+        /// <summary>IS 456 Cl. 6.2.4.1: design ultimate shrinkage strain (w/c ≤ 0.5).</summary>
         private const double EPSILON_CS = 0.0003;
 
-        // ── Alpha coefficient for mid-span deflection under UDL ────────────────
-        // Expressed as: δ_mid = α × M_midspan × L² / (EI)
-        // Simply supported      α = 5/48   (δ = 5wL⁴/384EI; M_ss = wL²/8)
-        // One-end continuous    α ≈ 1/48   (conservative mid-range approximation)
-        // Both-ends continuous  α = 1/48   (δ = wL⁴/384EI; M_mid = wL²/12 → α=1/48)
-        // Cantilever            α = 1/4    (δ = wL⁴/8EI;   M_root = wL²/2  → α=1/4)
+        // Mid-span deflection coefficient α s.t.  δ_mid = α · M_mid · L²/(E·I).
+        // Derivation in the original file is correct.
         private static double GetAlpha(SlabData slab)
         {
             if (slab.Type == SlabType.Cantilever) return 1.0 / 4.0;
-
             switch (slab.BoundaryCase)
             {
                 case 1:
-                    // CORRECTION: was 1/16 (wrong). Correct value for both-ends-continuous
-                    // using positive mid-span moment M_pos = α_x × wFactored × Lx² is 1/48.
-                    // (Derivation: δ = wL⁴/384EI; M_mid = wL²/12; α = δ/(M_mid·L²/EI) = 1/48.)
-                    return 1.0 / 48.0;
                 case 2:
                 case 3:
-                case 4:
-                    return 1.0 / 48.0; // one or two edges discontinuous: conservative 1/48
-                default:
-                    return 5.0 / 48.0; // simply supported (Cases 5, 7, 8, 9)
+                case 4: return 1.0 / 48.0;   // continuous / partially continuous
+                default: return 5.0 / 48.0;  // simply supported (Cases 5–9)
             }
         }
 
-        // ── k3 coefficient for shrinkage deflection (IS 456 Annex C, Eq. C-5) ──
+        // k3 coefficient for shrinkage deflection — IS 456 Annex C Eq. C-3
         private static double GetK3(SlabData slab)
         {
             if (slab.Type == SlabType.Cantilever) return 0.5;
-            if (slab.BoundaryCase == 1) return 0.083;  // fully continuous
-            if (slab.BoundaryCase >= 5) return 0.125;  // simply supported
-            return 0.083;                               // intermediate: use continuous
+            if (slab.BoundaryCase == 1)           return 0.083; // fully continuous
+            if (slab.BoundaryCase >= 5)           return 0.125; // simply supported
+            return 0.086;                                        // one end continuous
+        }
+
+        // PATCH: separate k4 from k3.  pt and pc are tension and compression
+        // reinforcement percentages (Ast / (b·d) × 100 etc.).
+        private static double GetK4(double pt, double pc)
+        {
+            double diff = pt - pc;
+            if (diff <= 0 || pt <= 0) return 0;     // no tension steel → no shrinkage curvature
+            double k4;
+            if (diff < 0.25)      k4 = 0.72 * diff / Math.Sqrt(pt);  // extrapolation safety
+            else if (diff < 1.0)  k4 = 0.72 * diff / Math.Sqrt(pt);
+            else                  k4 = 0.65 * diff / Math.Sqrt(pt);
+            return Math.Min(1.0, k4);
         }
 
         /// <summary>
         /// Single-pass IS 456 Annex C deflection check.
-        /// Returns (Status, CalculatedDeflection, AllowableDeflection).
         /// </summary>
+        /// <param name="slab">Slab geometry & user-set cover / bar Ø / Fy.</param>
+        /// <param name="M_service_kNm">Service mid-span moment per metre (kN·m/m).</param>
+        /// <param name="M_perm_kNm">Permanent (DL only) mid-span moment per metre (kN·m/m).</param>
+        /// <param name="Ast_mm2">Tension steel area per metre (mm²/m).</param>
+        /// <param name="fck">Concrete grade (N/mm²).</param>
+        /// <param name="fy">Steel grade — currently unused inside (kept for API parity).</param>
+        /// <param name="L_eff">Effective span (mm).</param>
         public static (string Status, double CalculatedDeflection, double AllowableDeflection)
             CheckThickness(SlabData slab, double M_service_kNm, double M_perm_kNm,
                            double Ast_mm2, double fck, double fy, double L_eff)
         {
-            double b   = 1000.0; // mm — 1 m unit strip
-            double Ec  = GetEc(fck);
-            double Es  = 200000.0; // MPa
-            double m   = Es / Ec;
+            double b  = 1000.0;            // mm — 1 m strip
+            double Ec = GetEc(fck);
+            double Es = 200000.0;          // MPa
+            double m  = Es / Ec;
+            double L  = L_eff;
 
-            // Use passed effective span
-            double L = L_eff;
+            // Allowables (IS 456 Cl. 23.2)
+            double limitA = L / 250.0;
+            double limitB = Math.Min(L / 350.0, 20.0);
 
-            // IS 456 Cl. 23.2: two separate allowable deflection limits
-            double limitA   = L / 250.0;                  // total deflection
-            double limitB   = Math.Min(L / 350.0, 20.0); // post-construction limit
+            double D     = slab.Thickness;
+            double alpha = GetAlpha(slab);
+            double k3    = GetK3(slab);
 
-            double D = slab.Thickness;
-            double alpha  = GetAlpha(slab);
-            double k3     = GetK3(slab);
-            double Ec_eff = Ec / (1.0 + CREEP_COEFF); // long-term effective modulus
-
-            // ── Section geometry ──────────────────────────────────────────
-            double d = D - 20.0 - 5.0; // effective depth
+            // PATCH: effective depth uses slab.Cover and slab.BarDiaMain
+            double d = D - slab.Cover - slab.BarDiaMain / 2.0;
             if (d <= 0) return ("FAIL", 9999, limitA);
 
-            // ── Gross inertia ─────────────────────────────────────────────
-            double Igr = b * D * D * D / 12.0; // mm⁴
+            double Ec_eff = Ec / (1.0 + CREEP_COEFF);
 
-            // ── Cracking moment (IS 456 Cl. 6.2.2) ───────────────────────
-            double fcr = 0.7 * Math.Sqrt(fck); // N/mm²
-            double yt  = D / 2.0;               
-            double Mcr = (fcr * Igr / yt) / 1e6; // kN·m
+            // ── Gross & cracked section properties ────────────────────────
+            double Igr  = b * D * D * D / 12.0;                       // mm⁴
+            double fcr  = 0.7 * Math.Sqrt(fck);                       // N/mm²
+            double yt   = D / 2.0;
+            double Mcr  = (fcr * Igr / yt) / 1e6;                     // kN·m
 
-            // ── Cracked neutral axis depth (IS 456 Annex C) ───────────────
             double mAst = m * Ast_mm2;
-            double x    = (-mAst + Math.Sqrt(mAst * mAst + 2.0 * b * mAst * d)) / b; // mm
+            double x    = (-mAst + Math.Sqrt(mAst * mAst + 2.0 * b * mAst * d)) / b;
+            double Icr  = b * x * x * x / 3.0 + m * Ast_mm2 * (d - x) * (d - x);
 
-            // ── Cracked inertia (IS 456 Annex C) ─────────────────────────
-            double Icr = b * x * x * x / 3.0 + m * Ast_mm2 * (d - x) * (d - x); // mm⁴
+            // ── Effective inertia under service moment ───────────────────
+            double Ms   = Math.Abs(M_service_kNm);
+            double Ieff = (Ms < 0.001 || Mcr >= Ms) ? Igr : EffectiveI(Igr, Icr, Mcr, Ms, x, d);
 
-            // ── Effective inertia ─────────────────────────────────────────
-            double Ms = Math.Abs(M_service_kNm);
-            double Ieff;
-            if (Ms < 0.001 || Mcr >= Ms)
-            {
-                Ieff = Igr;
-            }
-            else
-            {
-                double z      = d - x / 3.0;
-                double denom  = 1.2 - (Mcr / Ms) * (z / d) * (1.0 - x / d);
-                Ieff = (denom > 0) ? Icr / denom : Igr;
-                Ieff = Math.Max(Icr, Math.Min(Igr, Ieff));
-            }
+            // ── Effective inertia under permanent moment ─────────────────
+            double Mp        = Math.Abs(M_perm_kNm);
+            double Ieff_perm = (Mp < 0.001 || Mcr >= Mp) ? Igr : EffectiveI(Igr, Icr, Mcr, Mp, x, d);
 
-            // ── Effective inertia for permanent load ──────────────────────
-            double Mp = Math.Abs(M_perm_kNm);
-            double Ieff_perm;
-            if (Mp < 0.001 || Mcr >= Mp)
-            {
-                Ieff_perm = Igr;
-            }
-            else
-            {
-                double z_p      = d - x / 3.0;
-                double denom_p  = 1.2 - (Mcr / Mp) * (z_p / d) * (1.0 - x / d);
-                Ieff_perm = (denom_p > 0) ? Icr / denom_p : Igr;
-                Ieff_perm = Math.Max(Icr, Math.Min(Igr, Ieff_perm));
-            }
-
-            // ── (a) Short-term deflection ─────────────────────────────────
+            // ── (a) Short-term elastic deflection under total service load ──
             double ai = alpha * Ms * 1e6 * L * L / (Ec * Ieff);
 
-            // ── (b) Creep deflection ──────────────────────────────────────
-            double a_perm_elastic = alpha * Mp * 1e6 * L * L / (Ec       * Ieff_perm);
-            double a_perm_LT      = alpha * Mp * 1e6 * L * L / (Ec_eff  * Ieff_perm);
-            double a_cc = a_perm_LT - a_perm_elastic; 
+            // ── (b) Creep deflection — Annex C Eq. C-2 ───────────────────
+            double a_perm_elastic = alpha * Mp * 1e6 * L * L / (Ec     * Ieff_perm);
+            double a_perm_LT      = alpha * Mp * 1e6 * L * L / (Ec_eff * Ieff_perm);
+            double a_cc           = a_perm_LT - a_perm_elastic;
 
-            // ── (c) Shrinkage deflection ──────────────────────────────────
-            double a_s = k3 * EPSILON_CS * L * L / D;
+            // ── (c) Shrinkage deflection — Annex C Eq. C-3 with k4 ───────
+            double pt = 100.0 * Ast_mm2 / (b * d);   // %
+            double pc = 0.0;                         // no compression steel modelled here
+            double k4 = GetK4(pt, pc);
+            double a_s = k3 * k4 * EPSILON_CS * L * L / D;
 
-            // ── Total long-term deflection ─────────────────────────────────
+            // ── Total long-term deflection ───────────────────────────────
             double a_total = ai + a_cc + a_s;
+            double a_post  = a_cc + a_s;
 
-            // ── Limit check ────────────────────────────────────────────────
-            double a_post = a_cc + a_s;
             bool passA = a_total <= limitA;
             bool passB = a_post  <= limitB;
 
             return (passA && passB)
                 ? ("SAFE", a_total, limitA)
                 : ("FAIL", a_total, limitA);
+        }
+
+        private static double EffectiveI(double Igr, double Icr, double Mcr, double M,
+                                         double x, double d)
+        {
+            double z     = d - x / 3.0;
+            double denom = 1.2 - (Mcr / M) * (z / d) * (1.0 - x / d);
+            double Ieff  = (denom > 0) ? Icr / denom : Igr;
+            return Math.Max(Icr, Math.Min(Igr, Ieff));
         }
     }
 }

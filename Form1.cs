@@ -1,24 +1,36 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Windows.Forms;
 using ETABSv1;
 
 namespace CSiNET8PluginExample1
 {
+    /// <summary>
+    /// Main UI: extracts slabs, designs them, displays them, and pushes
+    /// optimised thicknesses back to ETABS.
+    ///
+    /// PATCH NOTES (v2):
+    ///  • Reads design inputs (Fy, cover, bar Ø, fck fallback) from the new
+    ///    panelInputs controls and feeds them into EtabsDataExtractor.
+    ///  • "Push ALL" now uses the silent updater and shows a single summary
+    ///    popup at the end (one RefreshView call).
+    ///  • Per-slab detail panel now also displays material grades.
+    /// </summary>
     public partial class Form1 : Form
     {
-
-        private cSapModel _sapModel;
-        private cPluginCallback _pluginCallback;
-        private int errorCode = 0; 
+        private cSapModel? _sapModel;
+        private cPluginCallback? _pluginCallback;
+        private int errorCode = 0;
         private List<SlabData> _currentSlabs = new List<SlabData>();
 
-        // Extended UI Controls
-        private Button btnPushAllToEtabs;
-        private Label lblAstTop;
-        private Label lblAstBot;
-        private Label lblFlatSlabGeom;
-        private Label lblPunchingShear;
+        // Extra controls created at run-time
+        private Button btnPushAllToEtabs = null!;
+        private Label  lblAstTop          = null!;
+        private Label  lblAstBot          = null!;
+        private Label  lblMaterials       = null!;
+        private Label  lblFlatSlabGeom    = null!;
+        private Label  lblPunchingShear   = null!;
 
         public Form1()
         {
@@ -30,21 +42,23 @@ namespace CSiNET8PluginExample1
 
         private void SetupExtendedUI()
         {
-            // Push All Button
-            btnPushAllToEtabs = new Button();
-            btnPushAllToEtabs.Location = new System.Drawing.Point(15, 250);
-            btnPushAllToEtabs.Size = new System.Drawing.Size(265, 40);
-            btnPushAllToEtabs.Text = "Push ALL Optimized Thicknesses";
-            btnPushAllToEtabs.Enabled = false;
+            btnPushAllToEtabs = new Button
+            {
+                Location = new System.Drawing.Point(15, 245),
+                Size     = new System.Drawing.Size(265, 40),
+                Text     = "Push ALL Optimized Thicknesses",
+                Enabled  = false
+            };
             btnPushAllToEtabs.Click += btnPushAllToEtabs_Click;
             panelProperties.Controls.Add(btnPushAllToEtabs);
 
-            // Details Labels
-            lblAstTop = new Label { Location = new System.Drawing.Point(15, 310), Size = new System.Drawing.Size(265, 35), Text = "Top Steel:\n-" };
-            lblAstBot = new Label { Location = new System.Drawing.Point(15, 355), Size = new System.Drawing.Size(265, 35), Text = "Bottom Steel:\n-" };
-            lblFlatSlabGeom = new Label { Location = new System.Drawing.Point(15, 400), Size = new System.Drawing.Size(265, 15), Text = "Geometry: -", Visible = false };
-            lblPunchingShear = new Label { Location = new System.Drawing.Point(15, 420), Size = new System.Drawing.Size(265, 15), Text = "Punching: -", Visible = false };
+            lblMaterials     = new Label { Location = new System.Drawing.Point(15, 150), Size = new System.Drawing.Size(265, 40), Text = "fck / fy: -" };
+            lblAstTop        = new Label { Location = new System.Drawing.Point(15, 290), Size = new System.Drawing.Size(265, 35), Text = "Top Steel:\n-" };
+            lblAstBot        = new Label { Location = new System.Drawing.Point(15, 330), Size = new System.Drawing.Size(265, 35), Text = "Bottom Steel:\n-" };
+            lblFlatSlabGeom  = new Label { Location = new System.Drawing.Point(15, 370), Size = new System.Drawing.Size(265, 15), Text = "Geometry: -", Visible = false };
+            lblPunchingShear = new Label { Location = new System.Drawing.Point(15, 388), Size = new System.Drawing.Size(265, 15), Text = "Punching: -", Visible = false };
 
+            panelProperties.Controls.Add(lblMaterials);
             panelProperties.Controls.Add(lblAstTop);
             panelProperties.Controls.Add(lblAstBot);
             panelProperties.Controls.Add(lblFlatSlabGeom);
@@ -53,175 +67,163 @@ namespace CSiNET8PluginExample1
 
         private void SetupGrid()
         {
-            dataGridView1.Columns.Add("Name", "Slab Name");
-            dataGridView1.Columns.Add("Type", "Type");
-            dataGridView1.Columns.Add("Dimensions", "Lx x Ly (mm)");
-            dataGridView1.Columns.Add("Thickness", "Thickness (mm)");
-            dataGridView1.Columns.Add("AstXBot", "Ast X Bot");
-            dataGridView1.Columns.Add("BarsXBot", "Bars X Bot");
-            dataGridView1.Columns.Add("Status", "Design Status");
-            
-            dataGridView1.Columns["Dimensions"].Width = 120;
-            
+            dataGridView1.Columns.Add("Name",      "Slab");
+            dataGridView1.Columns.Add("Type",      "Type");
+            dataGridView1.Columns.Add("Dim",       "Lx × Ly (mm)");
+            dataGridView1.Columns.Add("Thickness", "D (mm)");
+            dataGridView1.Columns.Add("AstXBot",   "Ast X Bot");
+            dataGridView1.Columns.Add("BarsXBot",  "Bars X Bot");
+            dataGridView1.Columns.Add("Status",    "Status");
+
+            dataGridView1.Columns["Dim"].Width = 120;
             dataGridView1.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            dataGridView1.MultiSelect = false;
-            dataGridView1.ReadOnly = true;
+            dataGridView1.MultiSelect   = false;
+            dataGridView1.ReadOnly      = true;
         }
 
         public void SetSapModel(ref cSapModel inSapModel, ref cPluginCallback inPluginCallback)
         {
-            _sapModel = inSapModel;
-            _pluginCallback = inPluginCallback;
+            _sapModel        = inSapModel;
+            _pluginCallback  = inPluginCallback;
         }
 
-        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            if (_pluginCallback != null)
-            {
-                _pluginCallback.Finish(errorCode);
-            }
+            _pluginCallback?.Finish(errorCode);
         }
 
-        private void button1_Click(object sender, EventArgs e)
+        private void button1_Click(object? sender, EventArgs e)
         {
-            if (_sapModel == null)
-            {
-                MessageBox.Show("ETABS model is not attached.");
-                return;
-            }
+            if (_sapModel == null) { MessageBox.Show("ETABS model is not attached."); return; }
 
             try
             {
                 dataGridView1.Rows.Clear();
-                
-                var extractor = new EtabsDataExtractor(_sapModel);
+
+                // PATCH: pull user inputs and pass to the extractor
+                double fyVal = ParseFy(cmbFy.SelectedItem?.ToString() ?? "Fe500 (500)");
+                var extractor = new EtabsDataExtractor(_sapModel)
+                {
+                    UserFy         = fyVal,
+                    UserCover      = (double)numCover.Value,
+                    UserBarDiaMain = (double)numBarMain.Value,
+                    UserBarDiaDist = (double)numBarDist.Value,
+                    DefaultFck     = (double)numFckOverride.Value
+                };
+
                 _currentSlabs = extractor.ExtractSlabs();
 
                 foreach (var slab in _currentSlabs)
                 {
                     SlabDesignEngine.DesignSlab(slab);
-                    
                     dataGridView1.Rows.Add(
-                        slab.Name,
-                        slab.Type.ToString(),
-                        $"{slab.Lx:F0} x {slab.Ly:F0}",
-                        slab.Thickness.ToString(),
+                        slab.Name, slab.Type.ToString(),
+                        $"{slab.Lx:F0} × {slab.Ly:F0}",
+                        slab.Thickness.ToString("F0"),
                         $"{slab.Ast_x_bot:F0}",
                         slab.Bars_x_bot,
-                        slab.DesignStatus
-                    );
+                        slab.DesignStatus);
                 }
-                
+
                 if (_currentSlabs.Count == 0)
-                {
                     MessageBox.Show("No slabs found in the ETABS model.");
-                }
                 else
-                {
-                    if (btnPushAllToEtabs != null) btnPushAllToEtabs.Enabled = true;
-                }
+                    btnPushAllToEtabs.Enabled = true;
             }
             catch (Exception ex)
             {
-                errorCode = 2; 
+                errorCode = 2;
                 MessageBox.Show("The following error occurred:" + Environment.NewLine + ex.Message);
             }
         }
 
-        private void dataGridView1_SelectionChanged(object sender, EventArgs e)
+        private static double ParseFy(string item)
         {
-            if (dataGridView1.SelectedRows.Count > 0)
+            // "Fe500 (500)" → 500
+            if (item.Contains("(") && item.Contains(")"))
             {
-                int index = dataGridView1.SelectedRows[0].Index;
-                if (index >= 0 && index < _currentSlabs.Count)
-                {
-                    var slab = _currentSlabs[index];
-                    lblSlabName.Text = $"Slab: {slab.Name}";
-                    lblThickness.Text = $"Req. Thickness: {slab.Thickness} mm";
-                    
-                    // We parse the deflection out of the notes for display, or better yet, we should add properties to SlabData.
-                    // For now, we display the notes in the status/deflection labels
-                    lblStatus.Text = $"Status: {slab.DesignStatus}";
-                    
-                    // Basic parsing of the notes string which looks like: "Required thickness for deflection: ... mm. Deflection Xmm <= Ymm. Moments: Mx+=Z kNm"
-                    string notes = slab.Notes;
-                    int deflStart = notes.IndexOf("Deflection");
-                    int deflEnd = notes.IndexOf("Moments");
-                    if (deflStart >= 0 && deflEnd > deflStart)
-                    {
-                        lblDeflection.Text = notes.Substring(deflStart, deflEnd - deflStart).Trim();
-                    }
-                    else
-                    {
-                        lblDeflection.Text = "Deflection: " + slab.Notes;
-                    }
-                    
-                    lblAstTop.Text = $"Top Steel:\nX: {slab.Bars_x_top}\nY: {slab.Bars_y_top}";
-                    lblAstBot.Text = $"Bot Steel:\nX: {slab.Bars_x_bot}\nY: {slab.Bars_y_bot}";
-
-                    if (slab.Type == SlabType.FlatSlab)
-                    {
-                        lblFlatSlabGeom.Visible = true;
-                        lblPunchingShear.Visible = true;
-                        lblFlatSlabGeom.Text = $"Cols: {slab.c1}x{slab.c2} mm" + (slab.HasDrop ? $" | Drop: {slab.DropDepth}mm" : "");
-                        lblPunchingShear.Text = $"Punching: {slab.PunchingShearStatus}";
-                    }
-                    else
-                    {
-                        lblFlatSlabGeom.Visible = false;
-                        lblPunchingShear.Visible = false;
-                    }
-                    
-                    btnPushToEtabs.Enabled = true;
-                    btnPushToEtabs.Tag = slab; 
-                }
+                int a = item.IndexOf('('); int b = item.IndexOf(')');
+                if (b > a && double.TryParse(item.Substring(a + 1, b - a - 1), out double v)) return v;
             }
-            else
-            {
-                lblSlabName.Text = "Select a Slab";
-                lblThickness.Text = "Thickness: -";
-                lblDeflection.Text = "Deflection: -";
-                lblStatus.Text = "Status: -";
-                lblAstTop.Text = "Top Steel:\n-";
-                lblAstBot.Text = "Bottom Steel:\n-";
-                lblFlatSlabGeom.Visible = false;
-                lblPunchingShear.Visible = false;
-                btnPushToEtabs.Enabled = false;
-            }
+            return 500;
         }
 
-        private void btnPushToEtabs_Click(object sender, EventArgs e)
+        private void dataGridView1_SelectionChanged(object? sender, EventArgs e)
         {
-            if (btnPushToEtabs.Tag is SlabData slab)
+            if (dataGridView1.SelectedRows.Count == 0) { ClearDetails(); return; }
+            int index = dataGridView1.SelectedRows[0].Index;
+            if (index < 0 || index >= _currentSlabs.Count) { ClearDetails(); return; }
+
+            var slab = _currentSlabs[index];
+            lblSlabName.Text  = $"Slab: {slab.Name}";
+            lblThickness.Text = $"Req. Thickness: {slab.Thickness:F0} mm";
+            lblStatus.Text    = $"Status: {slab.DesignStatus}";
+            lblDeflection.Text= "Notes: " + slab.Notes;
+
+            lblMaterials.Text = $"fck = {slab.Fck:F0} N/mm² (material: '{slab.MaterialName}')\n" +
+                                $"fy  = {slab.Fy:F0} N/mm²,  cover = {slab.Cover:F0} mm,  Ø = {slab.BarDiaMain:F0}/{slab.BarDiaDist:F0} mm";
+            lblAstTop.Text = $"Top Steel:\nX: {slab.Bars_x_top}\nY: {slab.Bars_y_top}";
+            lblAstBot.Text = $"Bot Steel:\nX: {slab.Bars_x_bot}\nY: {slab.Bars_y_bot}";
+
+            bool isFlat = slab.Type == SlabType.FlatSlab;
+            lblFlatSlabGeom.Visible = lblPunchingShear.Visible = isFlat;
+            if (isFlat)
             {
-                if (_sapModel != null)
-                {
-                    var updater = new EtabsModelUpdater(_sapModel);
-                    updater.PushOptimizedThickness(slab);
-                }
-                else
-                {
-                    MessageBox.Show("ETABS model is not attached.", "Error");
-                }
+                lblFlatSlabGeom.Text = $"Cols: {slab.c1:F0}×{slab.c2:F0} mm" +
+                                       (slab.HasDrop ? $" | Drop: {slab.DropDepth:F0}mm" : "");
+                lblPunchingShear.Text = $"Punching: {slab.PunchingShearStatus}";
             }
+
+            btnPushToEtabs.Enabled = true;
+            btnPushToEtabs.Tag = slab;
         }
 
-        private void btnPushAllToEtabs_Click(object sender, EventArgs e)
+        private void ClearDetails()
         {
-            if (_sapModel == null)
+            lblSlabName.Text   = "Select a Slab";
+            lblThickness.Text  = "Thickness: -";
+            lblDeflection.Text = "Notes: -";
+            lblStatus.Text     = "Status: -";
+            lblMaterials.Text  = "fck / fy: -";
+            lblAstTop.Text     = "Top Steel:\n-";
+            lblAstBot.Text     = "Bottom Steel:\n-";
+            lblFlatSlabGeom.Visible = lblPunchingShear.Visible = false;
+            btnPushToEtabs.Enabled = false;
+        }
+
+        private void btnPushToEtabs_Click(object? sender, EventArgs e)
+        {
+            if (btnPushToEtabs.Tag is SlabData slab && _sapModel != null)
             {
-                MessageBox.Show("ETABS model is not attached.", "Error");
-                return;
+                var updater = new EtabsModelUpdater(_sapModel);
+                updater.PushOptimizedThickness(slab);
             }
+            else MessageBox.Show("ETABS model is not attached.", "Error");
+        }
+
+        private void btnPushAllToEtabs_Click(object? sender, EventArgs e)
+        {
+            if (_sapModel == null) { MessageBox.Show("ETABS model is not attached.", "Error"); return; }
 
             var updater = new EtabsModelUpdater(_sapModel);
-            int count = 0;
+            int ok = 0, fail = 0;
+            var failures = new StringBuilder();
+
             foreach (var slab in _currentSlabs)
             {
-                updater.PushOptimizedThickness(slab);
-                count++;
+                var (success, msg) = updater.PushOptimizedThicknessSilent(slab);
+                if (success) ok++;
+                else { fail++; failures.AppendLine(" • " + msg); }
             }
-            MessageBox.Show($"Successfully pushed updated thickness for {count} slabs to ETABS!", "Success");
+
+            updater.TryRefreshView();
+
+            string summary = $"Pushed {ok} slab(s) successfully.";
+            if (fail > 0) summary += $"\n{fail} slab(s) FAILED:\n{failures}";
+            MessageBox.Show(summary,
+                fail == 0 ? "Push Complete" : "Push Completed with Errors",
+                MessageBoxButtons.OK,
+                fail == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
     }
 }

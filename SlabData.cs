@@ -20,68 +20,94 @@ namespace CSiNET8PluginExample1
         OneEndContinuous
     }
 
+    /// <summary>
+    /// Holds geometry, loads, material grades and design outputs for one slab panel.
+    ///
+    /// PATCH NOTES (v2):
+    ///  • Added per-slab fck (concrete grade) extracted from the assigned section's
+    ///    concrete material in ETABS.
+    ///  • Added Fy (steel grade) and BarDiaMain / BarDiaDist / Cover — all of which
+    ///    are user-configurable from the UI (the user's specific request:
+    ///    "steel rebar can be anything as per user").
+    ///  • Added IsOverReinforced flag so the design engine can react when the
+    ///    section needs compression steel or extra depth rather than silently
+    ///    capping Mu at Mu_lim.
+    /// </summary>
     public class SlabData
     {
-        public string Name { get; set; }
-        public string StoryName { get; set; }
+        public string Name      { get; set; } = "";
+        public string StoryName { get; set; } = "";
 
-        // Dimensions
-        public double Lx { get; set; }          // Short span (mm)
-        public double Ly { get; set; }          // Long span (mm)
-        public double Thickness { get; set; }   // mm
+        // ── Dimensions (mm) ────────────────────────────────────────────────
+        public double Lx { get; set; }          // Short span
+        public double Ly { get; set; }          // Long span
+        public double Thickness { get; set; }   // Slab thickness D (mm)
 
-        // Loads (kN/m²)
-        // NOTE: DeadLoad here represents superimposed/user-applied dead load only.
-        //       Self-weight is computed at design time from Thickness × 25 kN/m³.
+        // ── Loads (kN/m²) ──────────────────────────────────────────────────
+        // DeadLoad here represents the user-applied dead pressure only.
+        // Self-weight (D × 25 kN/m³) is added by the design engine — never
+        // double-counted with ETABS "Self Weight Multiplier".
         public double DeadLoad { get; set; }
         public double LiveLoad { get; set; }
         public double SuperimposedDeadLoad { get; set; }
 
-        // Classification
+        // ── Classification ────────────────────────────────────────────────
         public SlabType Type { get; set; }
-        public int BoundaryCase { get; set; }           // 1 to 9 (for TwoWay, IS 456 Table 26)
-        public SupportCondition Support { get; set; }  // for OneWay
+        public int BoundaryCase { get; set; }            // 1–9 (IS 456 Table 26)
+        public SupportCondition Support { get; set; }    // for OneWay
 
-        // CORRECTION (SlabData.cs): added MaterialName so that EtabsModelUpdater
-        // can re-use the original material when creating the resized property,
-        // instead of passing an empty string to SetSlab().
+        // ── Materials & cover (PATCH: now driven from ETABS + UI) ─────────
+        // MaterialName  : exact concrete material string used in PropArea.SetSlab
+        //                 round-trip (avoids creating a property with empty material).
+        // Fck (N/mm²)   : extracted from the concrete material assigned to the slab.
+        //                 If extraction fails, falls back to UI value (default 25).
+        // Fy  (N/mm²)   : steel yield strength — chosen by the user (250/415/500/550).
+        // Cover (mm)    : clear cover to main reinforcement (user input, default 20).
+        // BarDiaMain    : main-bar diameter in mm (user input, default 10).
+        // BarDiaDist    : distribution-bar diameter in mm (user input, default 8).
         public string MaterialName { get; set; } = "";
+        public double Fck          { get; set; } = 25;
+        public double Fy           { get; set; } = 500;
+        public double Cover        { get; set; } = 20;
+        public double BarDiaMain   { get; set; } = 10;
+        public double BarDiaDist   { get; set; } = 8;
 
-        // Design outputs
+        // ── Design outputs ────────────────────────────────────────────────
         public double DeflectionRatio { get; set; } = 0;
-        public string DesignStatus { get; set; } = "";
-        public string Notes { get; set; } = "";
+        public string DesignStatus    { get; set; } = "";
+        public string Notes           { get; set; } = "";
+        public bool   IsOverReinforced { get; set; } = false;   // PATCH
 
-        // Reinforcement outputs (Ast in mm2/m)
+        // ── Reinforcement outputs (Ast in mm²/m) ──────────────────────────
         public double Ast_x_bot { get; set; } = 0;
         public double Ast_y_bot { get; set; } = 0;
         public double Ast_x_top { get; set; } = 0;
         public double Ast_y_top { get; set; } = 0;
 
-        // Final Bar Selection Strings (e.g., "T10 @ 150 c/c")
+        // ── Final bar selection strings (e.g. "T10 @ 150 c/c") ────────────
         public string Bars_x_bot { get; set; } = "";
         public string Bars_y_bot { get; set; } = "";
         public string Bars_x_top { get; set; } = "";
         public string Bars_y_top { get; set; } = "";
 
-        // Effective Span Edge Properties
-        public double SupportWidthX1 { get; set; } = 0; // mm
-        public double SupportWidthX2 { get; set; } = 0; // mm
-        public double SupportWidthY1 { get; set; } = 0; // mm
-        public double SupportWidthY2 { get; set; } = 0; // mm
+        // ── Effective-span edge properties (mm) ───────────────────────────
+        public double SupportWidthX1 { get; set; } = 0;
+        public double SupportWidthX2 { get; set; } = 0;
+        public double SupportWidthY1 { get; set; } = 0;
+        public double SupportWidthY2 { get; set; } = 0;
 
         public bool IsContinuousX1 { get; set; } = false;
         public bool IsContinuousX2 { get; set; } = false;
         public bool IsContinuousY1 { get; set; } = false;
         public bool IsContinuousY2 { get; set; } = false;
 
-        // Flat Slab specific properties
-        public double c1 { get; set; } = 400; // Column dimension (mm)
-        public double c2 { get; set; } = 400; // Column dimension (mm)
-        public bool HasDrop { get; set; } = false;
-        public double DropL1 { get; set; } = 0; // Drop span (mm)
-        public double DropL2 { get; set; } = 0; // Drop span (mm)
-        public double DropDepth { get; set; } = 0; // Total thickness at drop (mm)
+        // ── Flat-slab specific (mm) ───────────────────────────────────────
+        public double c1 { get; set; } = 400;       // column dim along L1
+        public double c2 { get; set; } = 400;       // column dim along L2
+        public bool   HasDrop  { get; set; } = false;
+        public double DropL1   { get; set; } = 0;   // drop dimension along L1
+        public double DropL2   { get; set; } = 0;   // drop dimension along L2
+        public double DropDepth { get; set; } = 0;  // total thickness inside drop
         public string PunchingShearStatus { get; set; } = "";
     }
 }

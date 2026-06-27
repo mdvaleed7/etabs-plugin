@@ -1,107 +1,102 @@
 using System;
+using System.Collections.Generic;
 using ETABSv1;
 using System.Windows.Forms;
 
 namespace CSiNET8PluginExample1
 {
+    /// <summary>
+    /// Writes optimised slab thicknesses back into ETABS as new shell-section
+    /// properties and re-assigns the panels.
+    ///
+    /// PATCH NOTES (v2):
+    ///  • New PushOptimizedThicknessSilent(slab) — no popup, returns a status
+    ///    code.  Used by "Push ALL" so the user gets one summary popup at the
+    ///    end instead of N message boxes.
+    ///  • PushOptimizedThickness still exists for the single-slab button.
+    ///  • RefreshView() is called once at the end of any batch so the model
+    ///    redraws with the new thicknesses.
+    ///  • Properties are de-duplicated: if SLAB_{D}mm already exists for the
+    ///    same material we skip the redundant SetSlab call.
+    /// </summary>
     public class EtabsModelUpdater
     {
-        private cSapModel _sapModel;
+        private readonly cSapModel _sapModel;
+        private readonly HashSet<string> _propertiesCreated = new HashSet<string>();
 
         public EtabsModelUpdater(cSapModel sapModel)
         {
             _sapModel = sapModel;
         }
 
-        /// <summary>
-        /// Determines the factor required to convert a thickness from millimetres
-        /// into the ETABS model's present length unit.
-        ///
-        /// CORRECTION (EtabsModelUpdater.cs): the original code called SetSlab() with
-        /// slab.Thickness directly (in mm).  If the model is in metres (the most common
-        /// IS practice), this would create a property with thickness = 150 m — a slab
-        /// 150 metres thick.  The corrected version queries GetPresentUnits() and
-        /// converts accordingly before calling the API.
-        /// </summary>
         private double MmToModelUnits()
         {
             eUnits u = _sapModel.GetPresentUnits();
-            string uName = u.ToString(); // e.g. "kN_m_C", "kN_mm_C", "kip_in_C" …
-
-            if (uName.Contains("_mm_")) return 1.0;          // mm → mm (no conversion)
-            if (uName.Contains("_in_")) return 1.0 / 25.4;  // mm → inches
-            if (uName.Contains("_ft_")) return 1.0 / 304.8; // mm → feet
-            return 1.0 / 1000.0;                             // mm → metres (default/kN_m_C)
+            string uName = u.ToString();
+            if (uName.Contains("_mm_")) return 1.0;
+            if (uName.Contains("_in_")) return 1.0 / 25.4;
+            if (uName.Contains("_ft_")) return 1.0 / 304.8;
+            return 1.0 / 1000.0;                 // → metres
         }
 
+        /// <summary>Single-slab push with popup feedback.</summary>
         public void PushOptimizedThickness(SlabData slab)
+        {
+            var (ok, msg) = PushOptimizedThicknessSilent(slab);
+            MessageBox.Show(msg,
+                ok ? "Success" : "Error",
+                MessageBoxButtons.OK,
+                ok ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+
+            if (ok) TryRefreshView();
+        }
+
+        /// <summary>
+        /// Batch push: no popup per slab. Caller is expected to summarise.
+        /// </summary>
+        public (bool ok, string message) PushOptimizedThicknessSilent(SlabData slab)
         {
             try
             {
-                // Build a unique property name from the rounded thickness (mm)
                 string newPropName = $"SLAB_{(int)Math.Round(slab.Thickness)}mm";
-
-                // CORRECTION: convert thickness from mm to the model's current length unit.
                 double thicknessModelUnits = slab.Thickness * MmToModelUnits();
 
-                // CORRECTION: use the material name extracted from the original section
-                // property (stored on SlabData.MaterialName by EtabsDataExtractor).
-                // The original code passed an empty string "", which would either fail
-                // silently or assign a default material — neither is acceptable.
                 string matProp = string.IsNullOrEmpty(slab.MaterialName)
-                    ? "M25"          // safe fallback — warn the user if this branch is hit
-                    : slab.MaterialName;
+                    ? "M25" : slab.MaterialName;
 
-                if (string.IsNullOrEmpty(slab.MaterialName))
+                // De-duplicate SetSlab calls inside one batch
+                string cacheKey = $"{newPropName}|{matProp}";
+                if (!_propertiesCreated.Contains(cacheKey))
                 {
-                    MessageBox.Show(
-                        $"Warning: material name for slab '{slab.Name}' was not extracted " +
-                        $"from the model. Defaulting to 'M25'. Please verify the section " +
-                        $"property '{newPropName}' after the push.",
-                        "Material Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    int retSet = _sapModel.PropArea.SetSlab(
+                        newPropName, eSlabType.Slab, eShellType.ShellThin,
+                        matProp, thicknessModelUnits);
+
+                    if (retSet != 0)
+                        return (false, $"SetSlab() failed for '{newPropName}' (ret={retSet}). " +
+                                       $"Check material '{matProp}' and units.");
+
+                    _propertiesCreated.Add(cacheKey);
                 }
 
-                // Create (or overwrite) the slab section property
-                int retSet = _sapModel.PropArea.SetSlab(
-                    newPropName,
-                    eSlabType.Slab,
-                    eShellType.ShellThin,
-                    matProp,
-                    thicknessModelUnits);
-
-                if (retSet != 0)
-                {
-                    MessageBox.Show(
-                        $"SetSlab() failed for property '{newPropName}' " +
-                        $"(ret={retSet}). Check material name '{matProp}' and units.",
-                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                // Assign the new property to the area object
                 int retAssign = _sapModel.AreaObj.SetProperty(slab.Name, newPropName);
+                if (retAssign != 0)
+                    return (false, $"SetProperty() failed for slab '{slab.Name}' (ret={retAssign}).");
 
-                if (retAssign == 0)
-                {
-                    MessageBox.Show(
-                        $"Slab '{slab.Name}' updated to {slab.Thickness:F0} mm " +
-                        $"(property: '{newPropName}', material: '{matProp}').",
-                        "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                else
-                {
-                    MessageBox.Show(
-                        $"SetProperty() failed for slab '{slab.Name}' " +
-                        $"(ret={retAssign}).",
-                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                return (true, $"Slab '{slab.Name}' → {slab.Thickness:F0} mm " +
+                              $"(property '{newPropName}', material '{matProp}').");
             }
             catch (Exception ex)
             {
-                MessageBox.Show(
-                    $"Unexpected error updating ETABS model:{Environment.NewLine}{ex.Message}",
-                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return (false, $"Unexpected error: {ex.Message}");
             }
+        }
+
+        /// <summary>Force ETABS to redraw the active view after the batch.</summary>
+        public void TryRefreshView()
+        {
+            try { _sapModel.View.RefreshView(0, false); }
+            catch { /* non-critical */ }
         }
     }
 }

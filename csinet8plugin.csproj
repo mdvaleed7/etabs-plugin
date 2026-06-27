@@ -6,18 +6,35 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <RootNamespace>CSiNET8PluginExample1</RootNamespace>
+    <AssemblyName>csinet8plugin</AssemblyName>
+
+    <!-- PATCH: ETABS 22 is 64-bit only. Building AnyCPU and dropping the DLL
+         into ETABS' Plugins folder works, but pinning x64 prevents the wrong
+         architecture being chosen when the project is referenced from another
+         solution. -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+
+    <!-- Surface only real problems; treat nullability info as suggestions -->
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8622;CS8625;CS8765</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      ETABSv1 is a COM-interop assembly shipped with ETABS.  It MUST NOT be
+      copied to the output folder (the host ETABS process already has it
+      loaded), hence <Private>False</Private> and <ExcludeAssets>runtime</ExcludeAssets>.
+      The first HintPath that resolves wins; a local 'References' folder is
+      checked first so a developer can drop a copy of the DLL alongside the
+      project and avoid the hard-coded "Program Files" path.
+    -->
     <Reference Include="ETABSv1">
-      <HintPath>C:\Program Files\Computers and Structures\ETABS 22\ETABSv1.dll</HintPath>
+      <HintPath Condition="Exists('References\ETABSv1.dll')">References\ETABSv1.dll</HintPath>
+      <HintPath Condition="!Exists('References\ETABSv1.dll')">C:\Program Files\Computers and Structures\ETABS 22\ETABSv1.dll</HintPath>
       <Private>False</Private>
       <ExcludeAssets>runtime</ExcludeAssets>
     </Reference>
   </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-  </ItemGroup>
 </Project>
-
