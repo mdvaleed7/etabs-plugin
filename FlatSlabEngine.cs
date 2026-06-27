@@ -72,11 +72,24 @@ namespace CSiNET8PluginExample1
                 double M0 = wu * L2_m * Ln_m * Ln_m / 8.0;     // kN·m (panel)
 
                 // ── Long-span moment distribution (Cl. 31.4.3) ────────────
-                // For an interior panel: -0.65 M0, +0.35 M0.
-                // For an end span the split is more aggressive (-0.75 / +0.50)
-                // but without more topology info we use the interior split.
-                double M_neg = 0.65 * M0;
-                double M_pos = 0.35 * M0;
+                // For an interior panel:  -0.65 M0  /  +0.35 M0
+                // For an end / corner panel (IS 456 Cl. 31.4.3 — end-span
+                // split):                  -0.75 M0  /  +0.50 M0
+                // PATCH (fix #4): GeometricTopologyAnalyzer now sets
+                // slab.IsEndPanel = true when at least one edge is
+                // discontinuous (model boundary).  Use the end-span split in
+                // that case instead of always using the interior split.
+                double M_neg, M_pos;
+                if (slab.IsEndPanel)
+                {
+                    M_neg = 0.75 * M0;
+                    M_pos = 0.50 * M0;
+                }
+                else
+                {
+                    M_neg = 0.65 * M0;
+                    M_pos = 0.35 * M0;
+                }
 
                 // Strip widths (m) — IS 456 Cl. 31.5.5
                 double colStripWidth = Math.Min(0.25 * L1_m, 0.25 * L2_m) * 2.0; // = 0.5·min(L1,L2)
@@ -154,8 +167,11 @@ namespace CSiNET8PluginExample1
                 double M0_service = w_service * L2_m * Ln_m * Ln_m / 8.0;
                 double M0_perm    = w_perm    * L2_m * Ln_m * Ln_m / 8.0;
 
-                double M_pos_col_service_per_m = 0.35 * 0.60 * M0_service / colStripWidth;
-                double M_pos_col_perm_per_m    = 0.35 * 0.60 * M0_perm    / colStripWidth;
+                // PATCH (fix #4): mirror the end-panel / interior split here so
+                // the deflection check is consistent with the design moment.
+                double posSplit = slab.IsEndPanel ? 0.50 : 0.35;
+                double M_pos_col_service_per_m = posSplit * 0.60 * M0_service / colStripWidth;
+                double M_pos_col_perm_per_m    = posSplit * 0.60 * M0_perm    / colStripWidth;
 
                 var deflResult = Is456DeflectionEngine.CheckThickness(
                     slab, M_pos_col_service_per_m, M_pos_col_perm_per_m,

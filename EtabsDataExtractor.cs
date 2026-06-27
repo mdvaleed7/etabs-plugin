@@ -111,19 +111,23 @@ namespace CSiNET8PluginExample1
                 }
                 else if (numPoints >= 3 && pointNames != null)
                 {
-                    // PATCH v3: non-quadrilateral panel — use bounding-box of
-                    // all vertices so the geometry is at least representative.
-                    double minX=double.MaxValue, maxX=double.MinValue;
-                    double minY=double.MaxValue, maxY=double.MinValue;
+                    // PATCH (fix #10): bounding-box fallback used to assume the
+                    // panel was axis-aligned, which over-estimates Lx/Ly for
+                    // skew / rotated panels.  Project all vertices onto the
+                    // panel's principal axes (2-D PCA) and take min/max along
+                    // each axis — i.e. the minimum-bounding-rectangle aligned
+                    // with the panel's own geometry.
+                    var xs = new double[numPoints];
+                    var ys = new double[numPoints];
                     for (int i = 0; i < numPoints; i++)
                     {
                         double xp=0, yp=0, zp=0;
                         _sapModel.PointObj.GetCoordCartesian(pointNames[i], ref xp, ref yp, ref zp);
-                        minX = Math.Min(minX, xp); maxX = Math.Max(maxX, xp);
-                        minY = Math.Min(minY, yp); maxY = Math.Max(maxY, yp);
+                        xs[i] = xp; ys[i] = yp;
                     }
-                    double bx = (maxX - minX) * lenToM * 1000.0;
-                    double by = (maxY - minY) * lenToM * 1000.0;
+                    GetPrincipalAxisExtents(xs, ys, out double extA, out double extB);
+                    double bx = extA * lenToM * 1000.0;
+                    double by = extB * lenToM * 1000.0;
                     slab.Lx = Math.Min(bx, by);
                     slab.Ly = Math.Max(bx, by);
                     slab.Type = SlabType.Unknown;       // flag for review
@@ -236,6 +240,61 @@ namespace CSiNET8PluginExample1
             ExtractFlatSlabProperties(slabs, lenToM);
 
             return slabs;
+        }
+
+        /// <summary>
+        /// PATCH (fix #10): minimum-bounding-rectangle extents of a polygon
+        /// using a 2-D principal-axis (PCA) projection.  Returns the lengths
+        /// of the two principal extents in the SAME units as the input X / Y.
+        ///
+        /// Algorithm:
+        ///   1. Translate vertices to the centroid.
+        ///   2. Build the 2x2 covariance matrix.
+        ///   3. Solve the 2x2 symmetric eigen-problem in closed form to get
+        ///      the principal direction theta.
+        ///   4. Rotate all vertices by -theta and return (max-min) along each
+        ///      rotated axis.
+        ///
+        /// For a perfectly axis-aligned panel theta -> 0 and the result
+        /// coincides with the old axis-aligned bounding box.
+        /// </summary>
+        private static void GetPrincipalAxisExtents(double[] xs, double[] ys,
+                                                    out double extA, out double extB)
+        {
+            int n = xs.Length;
+            double cx = 0, cy = 0;
+            for (int i = 0; i < n; i++) { cx += xs[i]; cy += ys[i]; }
+            cx /= n; cy /= n;
+
+            double sxx = 0, syy = 0, sxy = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double dx = xs[i] - cx;
+                double dy = ys[i] - cy;
+                sxx += dx * dx;
+                syy += dy * dy;
+                sxy += dx * dy;
+            }
+
+            // Principal angle of the 2x2 covariance matrix [sxx sxy; sxy syy].
+            // theta = 0.5 * atan2(2*sxy, sxx - syy)
+            double theta = 0.5 * Math.Atan2(2.0 * sxy, sxx - syy);
+            double cos = Math.Cos(theta);
+            double sin = Math.Sin(theta);
+
+            double minA = double.MaxValue, maxA = double.MinValue;
+            double minB = double.MaxValue, maxB = double.MinValue;
+            for (int i = 0; i < n; i++)
+            {
+                double dx = xs[i] - cx;
+                double dy = ys[i] - cy;
+                double a =  cos * dx + sin * dy;   // along principal axis 1
+                double b = -sin * dx + cos * dy;   // along principal axis 2
+                if (a < minA) minA = a; if (a > maxA) maxA = a;
+                if (b < minB) minB = b; if (b > maxB) maxB = b;
+            }
+            extA = maxA - minA;
+            extB = maxB - minB;
         }
 
         /// <summary>

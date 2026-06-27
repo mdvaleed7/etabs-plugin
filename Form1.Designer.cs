@@ -64,9 +64,12 @@ namespace CSiNET8PluginExample1
             this.btnExtract.Click += new System.EventHandler(this.button1_Click);
 
             // ── panelInputs (new) ─────────────────────────────────────
+            // PATCH (fix #7): widen panelInputs (was 300 px) so the
+            // "fck fallback (N/mm²):" label and its NumericUpDown both fit on
+            // one row at default 96 DPI.
             this.panelInputs.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
             this.panelInputs.Location    = new System.Drawing.Point(670, 12);
-            this.panelInputs.Size        = new System.Drawing.Size(300, 200);
+            this.panelInputs.Size        = new System.Drawing.Size(360, 200);
             this.panelInputs.Controls.Add(this.lblInputsHdr);
             this.panelInputs.Controls.Add(this.lblFy);
             this.panelInputs.Controls.Add(this.cmbFy);
@@ -84,28 +87,35 @@ namespace CSiNET8PluginExample1
             this.lblInputsHdr.Location = new System.Drawing.Point(10, 8);
             this.lblInputsHdr.AutoSize = true;
 
+            // PATCH (fix #7): labels widened (MinimumSize) and inputs shifted
+            // right + enlarged so nothing clips at default DPI.
             this.lblFy.Text = "Steel grade fy:";  this.lblFy.Location = new System.Drawing.Point(10, 35); this.lblFy.AutoSize = true;
-            this.cmbFy.Location = new System.Drawing.Point(150, 32);
-            this.cmbFy.Size = new System.Drawing.Size(130, 22);
+            this.lblFy.MinimumSize = new System.Drawing.Size(170, 0);
+            this.cmbFy.Location = new System.Drawing.Point(190, 32);
+            this.cmbFy.Size = new System.Drawing.Size(150, 22);
             this.cmbFy.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.cmbFy.Items.AddRange(new object[] { "Fe250 (250)", "Fe415 (415)", "Fe500 (500)", "Fe550 (550)" });
             this.cmbFy.SelectedIndex = 2;
 
             this.lblCover.Text   = "Clear cover (mm):"; this.lblCover.Location = new System.Drawing.Point(10, 65); this.lblCover.AutoSize = true;
+            this.lblCover.MinimumSize = new System.Drawing.Size(170, 0);
             this.numCover.Minimum = 15; this.numCover.Maximum = 75; this.numCover.Value = 20;
-            this.numCover.Location = new System.Drawing.Point(180, 62); this.numCover.Size = new System.Drawing.Size(100, 22);
+            this.numCover.Location = new System.Drawing.Point(190, 62); this.numCover.Size = new System.Drawing.Size(150, 22);
 
             this.lblBarMain.Text = "Bar Ø main (mm):";  this.lblBarMain.Location = new System.Drawing.Point(10, 95); this.lblBarMain.AutoSize = true;
+            this.lblBarMain.MinimumSize = new System.Drawing.Size(170, 0);
             this.numBarMain.Minimum = 6; this.numBarMain.Maximum = 25; this.numBarMain.Value = 10;
-            this.numBarMain.Location = new System.Drawing.Point(180, 92); this.numBarMain.Size = new System.Drawing.Size(100, 22);
+            this.numBarMain.Location = new System.Drawing.Point(190, 92); this.numBarMain.Size = new System.Drawing.Size(150, 22);
 
             this.lblBarDist.Text = "Bar Ø dist. (mm):";  this.lblBarDist.Location = new System.Drawing.Point(10, 125); this.lblBarDist.AutoSize = true;
+            this.lblBarDist.MinimumSize = new System.Drawing.Size(170, 0);
             this.numBarDist.Minimum = 6; this.numBarDist.Maximum = 16; this.numBarDist.Value = 8;
-            this.numBarDist.Location = new System.Drawing.Point(180, 122); this.numBarDist.Size = new System.Drawing.Size(100, 22);
+            this.numBarDist.Location = new System.Drawing.Point(190, 122); this.numBarDist.Size = new System.Drawing.Size(150, 22);
 
             this.lblFckOverride.Text = "fck fallback (N/mm²):"; this.lblFckOverride.Location = new System.Drawing.Point(10, 155); this.lblFckOverride.AutoSize = true;
+            this.lblFckOverride.MinimumSize = new System.Drawing.Size(170, 0);
             this.numFckOverride.Minimum = 15; this.numFckOverride.Maximum = 60; this.numFckOverride.Value = 25;
-            this.numFckOverride.Location = new System.Drawing.Point(180, 152); this.numFckOverride.Size = new System.Drawing.Size(100, 22);
+            this.numFckOverride.Location = new System.Drawing.Point(190, 152); this.numFckOverride.Size = new System.Drawing.Size(150, 22);
 
             // panelProperties (slab details — shifted down to make room)
             this.panelProperties.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
@@ -114,11 +124,12 @@ namespace CSiNET8PluginExample1
             this.panelProperties.Controls.Add(this.lblDeflection);
             this.panelProperties.Controls.Add(this.lblThickness);
             this.panelProperties.Controls.Add(this.lblSlabName);
+            // PATCH (fix #7): panelProperties widened to match panelInputs.
             this.panelProperties.Location = new System.Drawing.Point(670, 220);
-            this.panelProperties.Size = new System.Drawing.Size(300, 295);
+            this.panelProperties.Size = new System.Drawing.Size(360, 295);
 
             this.btnPushToEtabs.Location = new System.Drawing.Point(15, 200);
-            this.btnPushToEtabs.Size = new System.Drawing.Size(265, 40);
+            this.btnPushToEtabs.Size = new System.Drawing.Size(325, 40);
             this.btnPushToEtabs.Text = "Push New Thickness to ETABS";
             this.btnPushToEtabs.Click += new System.EventHandler(this.btnPushToEtabs_Click);
             this.btnPushToEtabs.Enabled = false;
@@ -130,9 +141,12 @@ namespace CSiNET8PluginExample1
             this.lblSlabName.Location = new System.Drawing.Point(15, 15); this.lblSlabName.Text = "Select a Slab";
 
             // Form1
+            // PATCH (fix #7): ClientSize widened from 984 to 1044 to keep a
+            // 12 px margin around the now-360-px-wide right-hand panels at
+            // default 96 DPI.
             this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(984, 526);
+            this.ClientSize = new System.Drawing.Size(1044, 526);
             this.Controls.Add(this.panelInputs);
             this.Controls.Add(this.panelProperties);
             this.Controls.Add(this.btnExtract);

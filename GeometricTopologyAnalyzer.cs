@@ -131,9 +131,17 @@ namespace CSiNET8PluginExample1
 
                     if (isVertical)
                     {
-                        var topZ = Math.Max(z1, z2);
-                        var topX = x1;
-                        var topY = y1;
+                        // PATCH (fix #1, latent): use the X/Y of whichever end
+                        // is actually on top, not always (x1,y1).  For a
+                        // perfectly vertical column the two ends share X/Y so
+                        // the old code accidentally worked, but if the column
+                        // is tagged with p2 on top — or has any small lean —
+                        // the column-top point is wrong and the FlatSlab
+                        // detector misses panels that genuinely rest on it.
+                        bool p1OnTop = z1 >= z2;
+                        double topX = p1OnTop ? x1 : x2;
+                        double topY = p1OnTop ? y1 : y2;
+                        double topZ = p1OnTop ? z1 : z2;
                         columnTopPoints.Add(new Point3D(topX * _lenToM, topY * _lenToM, topZ * _lenToM));
                     }
                     else if (isHorizontal)
@@ -181,6 +189,16 @@ namespace CSiNET8PluginExample1
                 slab.SupportWidthY2 = beamEdges.TryGetValue(shortEdges[1], out double w4) ? w4 : 0;
                 slab.IsContinuousY1 = edgeToSlabs[shortEdges[0]].Count > 1;
                 slab.IsContinuousY2 = edgeToSlabs[shortEdges[1]].Count > 1;
+
+                // PATCH (fix #4): flag edge / corner panels.  A panel is an "end
+                // panel" for DDM purposes whenever ANY of its four edges is
+                // discontinuous (i.e. not shared with another slab — it sits
+                // on the model boundary).  This covers edge panels (one free
+                // edge) and corner panels (two free edges).  FlatSlabEngine
+                // uses this to swap the interior long-span split (-0.65 /
+                // +0.35 M₀) for the end-span split (-0.75 / +0.50 M₀)
+                // mandated by IS 456 Cl. 31.4.3.
+                slab.IsEndPanel = (shortDisc + longDisc) > 0;
 
                 int edgesWithBeams = edges.Count(e => beamEdges.ContainsKey(e));
 

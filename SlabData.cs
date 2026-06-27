@@ -109,5 +109,13 @@ namespace CSiNET8PluginExample1
         public double DropL2   { get; set; } = 0;   // drop dimension along L2
         public double DropDepth { get; set; } = 0;  // total thickness inside drop
         public string PunchingShearStatus { get; set; } = "";
+
+        // PATCH (fix #4): TRUE when the panel is an end / edge / corner panel
+        // along the L1 (long) direction — i.e. at least one of the two
+        // long-direction edges is discontinuous (a free / model-boundary edge,
+        // not shared with another slab).  Used by FlatSlabEngine to switch the
+        // DDM long-span split from the interior (-0.65 / +0.35) to the end
+        // span (-0.75 / +0.50, IS 456 Cl. 31.4.3).
+        public bool IsEndPanel { get; set; } = false;
     }
 }

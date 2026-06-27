@@ -61,8 +61,15 @@ namespace CSiNET8PluginExample1
                 string newPropName = $"SLAB_{(int)Math.Round(slab.Thickness)}mm";
                 double thicknessModelUnits = slab.Thickness * MmToModelUnits();
 
-                string matProp = string.IsNullOrEmpty(slab.MaterialName)
-                    ? "M25" : slab.MaterialName;
+                // PATCH (fix #6): never fall back to a hard-coded "M25"
+                // literal.  Strategy, in order:
+                //   1. Use the material already assigned to the slab section
+                //      (round-trips the actual ETABS material name).
+                //   2. Otherwise derive the IS grade name from the slab's fck
+                //      (e.g. fck = 30  ->  "M30").
+                //   3. If even that fails, fall back to the first concrete
+                //      material defined in the model.
+                string matProp = ResolveConcreteMaterial(slab);
 
                 // De-duplicate SetSlab calls inside one batch
                 string cacheKey = $"{newPropName}|{matProp}";
@@ -97,6 +104,70 @@ namespace CSiNET8PluginExample1
         {
             try { _sapModel.View.RefreshView(0, false); }
             catch { /* non-critical */ }
+        }
+
+        // ── PATCH (fix #6): replace the hard-coded "M25" fallback. ────────
+        // Cache so we only query the materials list once per session.
+        private string? _cachedFirstConcrete;
+
+        private string ResolveConcreteMaterial(SlabData slab)
+        {
+            // 1) Prefer the exact material already assigned to the slab.
+            if (!string.IsNullOrWhiteSpace(slab.MaterialName))
+                return slab.MaterialName;
+
+            // 2) Derive an IS-grade name from fck (M25, M30, M35, …).
+            int fck = (int)Math.Round(slab.Fck);
+            if (fck > 0)
+            {
+                string derived = $"M{fck}";
+                if (MaterialExists(derived)) return derived;
+            }
+
+            // 3) Fall back to the first concrete material defined in the model.
+            string? firstConcrete = GetFirstConcreteMaterial();
+            if (!string.IsNullOrEmpty(firstConcrete)) return firstConcrete;
+
+            // 4) Last resort — still derive from fck so the user gets a
+            //    sensible name they can create in ETABS if needed.
+            return fck > 0 ? $"M{fck}" : "M25";
+        }
+
+        private bool MaterialExists(string matName)
+        {
+            try
+            {
+                eMatType mt = eMatType.Concrete;
+                int sym = 0;
+                return _sapModel.PropMaterial.GetTypeOAPI(matName, ref mt, ref sym) == 0;
+            }
+            catch { return false; }
+        }
+
+        private string? GetFirstConcreteMaterial()
+        {
+            if (_cachedFirstConcrete != null) return _cachedFirstConcrete;
+            try
+            {
+                int n = 0;
+                string[] names = null;
+                if (_sapModel.PropMaterial.GetNameList(ref n, ref names) != 0 || names == null)
+                    return null;
+
+                foreach (var m in names)
+                {
+                    eMatType mt = eMatType.Concrete;
+                    int sym = 0;
+                    if (_sapModel.PropMaterial.GetTypeOAPI(m, ref mt, ref sym) == 0
+                        && mt == eMatType.Concrete)
+                    {
+                        _cachedFirstConcrete = m;
+                        return m;
+                    }
+                }
+            }
+            catch { /* non-critical */ }
+            return null;
         }
     }
 }
