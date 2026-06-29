@@ -1,238 +1,251 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Drawing;
 using System.Windows.Forms;
 using ETABSv1;
 
 namespace CSiNET8PluginExample1
 {
-    /// <summary>
-    /// Main UI: extracts slabs, designs them, displays them, and pushes
-    /// optimised thicknesses back to ETABS.
-    ///
-    /// PATCH NOTES (v2):
-    ///  • Reads design inputs (Fy, cover, bar Ø, fck fallback) from the new
-    ///    panelInputs controls and feeds them into EtabsDataExtractor.
-    ///  • "Push ALL" now uses the silent updater and shows a single summary
-    ///    popup at the end (one RefreshView call).
-    ///  • Per-slab detail panel now also displays material grades.
-    /// </summary>
     public partial class Form1 : Form
     {
-        private cSapModel? _sapModel;
-        private cPluginCallback? _pluginCallback;
-        private int errorCode = 0;
-        private List<SlabData> _currentSlabs = new List<SlabData>();
+        private cSapModel _sapModel;
+        private cPluginCallback _pluginCallback;
 
-        // Extra controls created at run-time
-        private Button btnPushAllToEtabs = null!;
-        private Label  lblAstTop          = null!;
-        private Label  lblAstBot          = null!;
-        private Label  lblMaterials       = null!;
-        private Label  lblFlatSlabGeom    = null!;
-        private Label  lblPunchingShear   = null!;
+        // ── Creators / helpers (lazily instantiated after _sapModel is set) ───
+        private LoadPatternCreator    _patCreator;
+        private LoadCaseCreator       _caseCreator;
+        private LoadAssigner          _assigner;
+        private LoadCombinationCreator _comboCreator;
 
         public Form1()
         {
             InitializeComponent();
-            FormClosing += Form1_FormClosing;
-            SetupGrid();
-            SetupExtendedUI();
+            this.FormClosing += Form1_FormClosing;
         }
 
-        private void SetupExtendedUI()
+        public void SetSapModel(ref cSapModel sapModel, ref cPluginCallback callback)
         {
-            btnPushAllToEtabs = new Button
-            {
-                Location = new System.Drawing.Point(15, 245),
-                Size     = new System.Drawing.Size(265, 40),
-                Text     = "Push ALL Optimized Thicknesses",
-                Enabled  = false
-            };
-            btnPushAllToEtabs.Click += btnPushAllToEtabs_Click;
-            panelProperties.Controls.Add(btnPushAllToEtabs);
+            _sapModel      = sapModel;
+            _pluginCallback = callback;
 
-            lblMaterials     = new Label { Location = new System.Drawing.Point(15, 150), Size = new System.Drawing.Size(265, 40), Text = "fck / fy: -" };
-            lblAstTop        = new Label { Location = new System.Drawing.Point(15, 290), Size = new System.Drawing.Size(265, 35), Text = "Top Steel:\n-" };
-            lblAstBot        = new Label { Location = new System.Drawing.Point(15, 330), Size = new System.Drawing.Size(265, 35), Text = "Bottom Steel:\n-" };
-            lblFlatSlabGeom  = new Label { Location = new System.Drawing.Point(15, 370), Size = new System.Drawing.Size(265, 15), Text = "Geometry: -", Visible = false };
-            lblPunchingShear = new Label { Location = new System.Drawing.Point(15, 388), Size = new System.Drawing.Size(265, 15), Text = "Punching: -", Visible = false };
+            _patCreator   = new LoadPatternCreator(_sapModel);
+            _caseCreator  = new LoadCaseCreator(_sapModel);
+            _assigner     = new LoadAssigner(_sapModel);
+            _comboCreator = new LoadCombinationCreator(_sapModel);
 
-            panelProperties.Controls.Add(lblMaterials);
-            panelProperties.Controls.Add(lblAstTop);
-            panelProperties.Controls.Add(lblAstBot);
-            panelProperties.Controls.Add(lblFlatSlabGeom);
-            panelProperties.Controls.Add(lblPunchingShear);
+
+
+            Log("Plugin connected to ETABS model.");
+            Log($"Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         }
 
-        private void SetupGrid()
+        // ── Config tab: zone changed → update R hint ─────────────────────────
+        private void OnZoneChanged()
         {
-            dataGridView1.Columns.Add("Name",      "Slab");
-            dataGridView1.Columns.Add("Type",      "Type");
-            dataGridView1.Columns.Add("Dim",       "Lx × Ly (mm)");
-            dataGridView1.Columns.Add("Thickness", "D (mm)");
-            dataGridView1.Columns.Add("AstXBot",   "Ast X (mm²/m)");
-            dataGridView1.Columns.Add("BarsXBot",  "Bars X (governing)");
-            dataGridView1.Columns.Add("Status",    "Status");
-
-            dataGridView1.Columns["Dim"].Width = 120;
-            dataGridView1.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            dataGridView1.MultiSelect   = false;
-            dataGridView1.ReadOnly      = true;
-        }
-
-        public void SetSapModel(ref cSapModel inSapModel, ref cPluginCallback inPluginCallback)
-        {
-            _sapModel        = inSapModel;
-            _pluginCallback  = inPluginCallback;
-        }
-
-        private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
-        {
-            _pluginCallback?.Finish(errorCode);
-        }
-
-        private void button1_Click(object? sender, EventArgs e)
-        {
-            if (_sapModel == null) { MessageBox.Show("ETABS model is not attached."); return; }
-
+            // Log seismic summary preview in the log tab
             try
             {
-                dataGridView1.Rows.Clear();
+                var cfg = BuildConfig();
+                Log($"Zone updated → {SeismicHelper.GetSummary(cfg)}");
+            }
+            catch { }
+        }
 
-                // PATCH: pull user inputs and pass to the extractor
-                double fyVal = ParseFy(cmbFy.SelectedItem?.ToString() ?? "Fe500 (500)");
-                var extractor = new EtabsDataExtractor(_sapModel)
-                {
-                    UserFy         = fyVal,
-                    UserCover      = (double)numCover.Value,
-                    UserBarDiaMain = (double)numBarMain.Value,
-                    UserBarDiaDist = (double)numBarDist.Value,
-                    DefaultFck     = (double)numFckOverride.Value
-                };
+        private void OnSysChanged()
+        {
+            // Auto-fill the R text box when system changes
+            double r = cbSys.SelectedIndex switch
+            {
+                0 => 3.0,   // RC OMRF
+                1 => 5.0,   // RC SMRF
+                2 => 4.0,   // RC SW + OMRF
+                3 => 5.0,   // RC SW + SMRF
+                4 => 3.0,   // Steel OMRF
+                5 => 5.0,   // Steel SMRF
+                6 => 4.0,   // Steel CBF
+                7 => 1.5,   // URM
+                _ => 3.0
+            };
+            txtR.Text = r.ToString("F1");
+        }
 
-                _currentSlabs = extractor.ExtractSlabs();
+        private void OnOccChanged()
+        {
+            double[] llLookup = { 2.0, 4.0, 4.0, 4.0, 5.0, 7.5, 12.0, 4.0, 4.0 };
+            if (cbOcc.SelectedIndex < llLookup.Length)
+                txtLL.Text = llLookup[cbOcc.SelectedIndex].ToString("F1");
+        }
 
-                foreach (var slab in _currentSlabs)
-                {
-                    SlabDesignEngine.DesignSlab(slab);
+        // ── Build BuildingConfig from form values ─────────────────────────────
+        private BuildingConfig BuildConfig()
+        {
+            // Parse R factor
+            if (!double.TryParse(txtR.Text, out double rVal)) rVal = 5.0;
+            if (!double.TryParse(txtDamp.Text, out double dampPct)) dampPct = 5.0;
+            if (!int.TryParse(txtModes.Text, out int nModes)) nModes = 12;
+            if (!double.TryParse(txtLL.Text, out double ll)) ll = 4.0;
+            if (!double.TryParse(txtSDL.Text, out double sdl)) sdl = 1.5;
+            if (!double.TryParse(txtRoofLL.Text, out double roofLL)) roofLL = 1.5;
+            if (!double.TryParse(txtCladding.Text, out double clad)) clad = 8.0;
+            if (!double.TryParse(txtParapet.Text, out double par)) par = 2.0;
 
-                    // PATCH v3: for a cantilever the dominant steel is at the
-                    // TOP at the root — display that instead of the (zero)
-                    // bottom steel so the grid is meaningful.
-                    bool topGoverns = slab.Type == SlabType.Cantilever
-                                   || slab.Ast_x_top > slab.Ast_x_bot;
-                    double astDisp  = topGoverns ? slab.Ast_x_top : slab.Ast_x_bot;
-                    string barsDisp = topGoverns ? slab.Bars_x_top : slab.Bars_x_bot;
+            SeismicZone zone = cbZone.SelectedIndex switch
+            {
+                0 => SeismicZone.II, 1 => SeismicZone.III,
+                2 => SeismicZone.IV, 3 => SeismicZone.V,
+                _ => SeismicZone.III
+            };
+            SiteClass soil = cbSoil.SelectedIndex switch
+            {
+                0 => SiteClass.Type_I_Hard, 1 => SiteClass.Type_II_Medium,
+                2 => SiteClass.Type_III_Soft, _ => SiteClass.Type_II_Medium
+            };
+            ImportanceFactor imp = cbImp.SelectedIndex switch
+            {
+                0 => ImportanceFactor.Cat_III_Normal, 1 => ImportanceFactor.Cat_II_Important,
+                2 => ImportanceFactor.Cat_I_Critical, _ => ImportanceFactor.Cat_III_Normal
+            };
+            StructuralSystem sys = cbSys.SelectedIndex switch
+            {
+                0 => StructuralSystem.RC_OMRF,           1 => StructuralSystem.RC_SMRF,
+                2 => StructuralSystem.RC_ShearWall_OMRF, 3 => StructuralSystem.RC_ShearWall_SMRF,
+                4 => StructuralSystem.Steel_OMRF,        5 => StructuralSystem.Steel_SMRF,
+                6 => StructuralSystem.Steel_CBF,         7 => StructuralSystem.UnreinforcedMasonry,
+                _ => StructuralSystem.RC_SMRF
+            };
 
-                    dataGridView1.Rows.Add(
-                        slab.Name, slab.Type.ToString(),
-                        $"{slab.Lx:F0} × {slab.Ly:F0}",
-                        slab.Thickness.ToString("F0"),
-                        $"{astDisp:F0}",
-                        barsDisp,
-                        slab.DesignStatus);
-                }
+            return new BuildingConfig
+            {
+                Zone           = zone,
+                SoilType       = soil,
+                Importance     = imp,
+                StructSystem   = sys,
+                R              = rVal,
+                DampingRatio   = dampPct / 100.0,
+                NumberOfModes  = Math.Max(6, nModes),
+                LiveLoad       = ll,
+                SDL            = sdl,
+                RoofLiveLoad   = roofLL,
+                CladdingLoad_kNm = clad,
+                ParapetLoad_kNm  = par,
+                // Pattern names from the bottom row of the Config tab
+                PatternDead    = string.IsNullOrWhiteSpace(txtPDead.Text) ? "DEAD" : txtPDead.Text.Trim(),
+                PatternSDL     = string.IsNullOrWhiteSpace(txtPSDL.Text)  ? "SDL"  : txtPSDL.Text.Trim(),
+                PatternLive    = string.IsNullOrWhiteSpace(txtPLive.Text) ? "LIVE" : txtPLive.Text.Trim(),
+                PatternEQX     = string.IsNullOrWhiteSpace(txtPEQX.Text)  ? "EQX"  : txtPEQX.Text.Trim(),
+                PatternEQY     = string.IsNullOrWhiteSpace(txtPEQY.Text)  ? "EQY"  : txtPEQY.Text.Trim(),
+                CaseEQX        = string.IsNullOrWhiteSpace(txtPEQX.Text)  ? "EQX"  : txtPEQX.Text.Trim(),
+                CaseEQY        = string.IsNullOrWhiteSpace(txtPEQY.Text)  ? "EQY"  : txtPEQY.Text.Trim(),
+            };
+        }
 
-                if (_currentSlabs.Count == 0)
-                    MessageBox.Show("No slabs found in the ETABS model.");
-                else
-                    btnPushAllToEtabs.Enabled = true;
+        // ── Load Setup steps ──────────────────────────────────────────────────
+        private void RunStep1()
+        {
+            if (_sapModel == null) { LogError("Not connected to ETABS"); return; }
+            mainTabs.SelectedTab = tabLoads;
+            try
+            {
+                var cfg = BuildConfig();
+                Log("\n" + _patCreator.CreateAllPatterns(cfg));
+            }
+            catch (Exception ex) { LogError($"Step 1 failed: {ex.Message}"); }
+        }
+
+        private void RunStep2()
+        {
+            if (_sapModel == null) { LogError("Not connected to ETABS"); return; }
+            mainTabs.SelectedTab = tabLoads;
+            try
+            {
+                var cfg = BuildConfig();
+                Log("\n" + _caseCreator.CreateAllCases(cfg));
+            }
+            catch (Exception ex) { LogError($"Step 2 failed: {ex.Message}"); }
+        }
+
+        private void RunStep3()
+        {
+            if (_sapModel == null) { LogError("Not connected to ETABS"); return; }
+            mainTabs.SelectedTab = tabLoads;
+            try
+            {
+                var cfg = BuildConfig();
+                Log("\n" + _assigner.AssignAllLoads(cfg));
+            }
+            catch (Exception ex) { LogError($"Step 3 failed: {ex.Message}"); }
+        }
+
+        private void RunStep4()
+        {
+            if (_sapModel == null) { LogError("Not connected to ETABS"); return; }
+            mainTabs.SelectedTab = tabLoads;
+            try
+            {
+                var cfg = BuildConfig();
+                Log("\n" + _comboCreator.CreateAllCombinations(cfg));
+            }
+            catch (Exception ex) { LogError($"Step 4 failed: {ex.Message}"); }
+        }
+
+        private void RunAllSteps()
+        {
+            if (_sapModel == null) { LogError("Not connected to ETABS"); return; }
+            mainTabs.SelectedTab = tabLoads;
+            Log("\n══════════════════════════════════════════");
+            Log($"  IS 875 + IS 1893:2016 Load Automation");
+            Log($"  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            Log("══════════════════════════════════════════");
+            try
+            {
+                var cfg = BuildConfig();
+                Log("\n" + _patCreator.CreateAllPatterns(cfg));
+                Log("\n" + _caseCreator.CreateAllCases(cfg));
+                Log("\n" + _assigner.AssignAllLoads(cfg));
+                Log("\n" + _comboCreator.CreateAllCombinations(cfg));
+                Log("\n✔  All steps complete. Refresh ETABS view and verify.");
+                Log("   IMPORTANT: Set Mass Source (Define > Mass Source) for seismic weight.");
+                Log("   Apply IS 875 Part 3 wind pressures to WLX/WLY cases manually.");
             }
             catch (Exception ex)
             {
-                errorCode = 2;
-                MessageBox.Show("The following error occurred:" + Environment.NewLine + ex.Message);
+                LogError($"Run failed: {ex.Message}\n{ex.StackTrace}");
             }
         }
 
-        private static double ParseFy(string item)
+
+
+        // ── Logging helpers ───────────────────────────────────────────────────
+        private void Log(string msg)
         {
-            // "Fe500 (500)" → 500
-            if (item.Contains("(") && item.Contains(")"))
+            if (rtbLog.InvokeRequired)
+                rtbLog.Invoke(new Action(() => Log(msg)));
+            else
             {
-                int a = item.IndexOf('('); int b = item.IndexOf(')');
-                if (b > a && double.TryParse(item.Substring(a + 1, b - a - 1), out double v)) return v;
+                rtbLog.AppendText(msg + "\r\n");
+                rtbLog.ScrollToCaret();
             }
-            return 500;
         }
 
-        private void dataGridView1_SelectionChanged(object? sender, EventArgs e)
+        private void LogError(string msg)
         {
-            if (dataGridView1.SelectedRows.Count == 0) { ClearDetails(); return; }
-            int index = dataGridView1.SelectedRows[0].Index;
-            if (index < 0 || index >= _currentSlabs.Count) { ClearDetails(); return; }
-
-            var slab = _currentSlabs[index];
-            lblSlabName.Text  = $"Slab: {slab.Name}";
-            lblThickness.Text = $"Req. Thickness: {slab.Thickness:F0} mm";
-            lblStatus.Text    = $"Status: {slab.DesignStatus}";
-            lblDeflection.Text= "Notes: " + slab.Notes;
-
-            lblMaterials.Text = $"fck = {slab.Fck:F0} N/mm² (material: '{slab.MaterialName}')\n" +
-                                $"fy  = {slab.Fy:F0} N/mm²,  cover = {slab.Cover:F0} mm,  Ø = {slab.BarDiaMain:F0}/{slab.BarDiaDist:F0} mm";
-            lblAstTop.Text = $"Top Steel:\nX: {slab.Bars_x_top}\nY: {slab.Bars_y_top}";
-            lblAstBot.Text = $"Bot Steel:\nX: {slab.Bars_x_bot}\nY: {slab.Bars_y_bot}";
-
-            bool isFlat = slab.Type == SlabType.FlatSlab;
-            lblFlatSlabGeom.Visible = lblPunchingShear.Visible = isFlat;
-            if (isFlat)
+            if (rtbLog.InvokeRequired)
+                rtbLog.Invoke(new Action(() => LogError(msg)));
+            else
             {
-                lblFlatSlabGeom.Text = $"Cols: {slab.c1:F0}×{slab.c2:F0} mm" +
-                                       (slab.HasDrop ? $" | Drop: {slab.DropDepth:F0}mm" : "");
-                lblPunchingShear.Text = $"Punching: {slab.PunchingShearStatus}";
+                int start = rtbLog.TextLength;
+                rtbLog.AppendText("  ✘  " + msg + "\r\n");
+                rtbLog.Select(start, msg.Length + 6);
+                rtbLog.SelectionColor = Color.FromArgb(255, 100, 100);
+                rtbLog.SelectionLength = 0;
+                rtbLog.ScrollToCaret();
             }
-
-            btnPushToEtabs.Enabled = true;
-            btnPushToEtabs.Tag = slab;
         }
 
-        private void ClearDetails()
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
-            lblSlabName.Text   = "Select a Slab";
-            lblThickness.Text  = "Thickness: -";
-            lblDeflection.Text = "Notes: -";
-            lblStatus.Text     = "Status: -";
-            lblMaterials.Text  = "fck / fy: -";
-            lblAstTop.Text     = "Top Steel:\n-";
-            lblAstBot.Text     = "Bottom Steel:\n-";
-            lblFlatSlabGeom.Visible = lblPunchingShear.Visible = false;
-            btnPushToEtabs.Enabled = false;
-        }
-
-        private void btnPushToEtabs_Click(object? sender, EventArgs e)
-        {
-            if (btnPushToEtabs.Tag is SlabData slab && _sapModel != null)
-            {
-                var updater = new EtabsModelUpdater(_sapModel);
-                updater.PushOptimizedThickness(slab);
-            }
-            else MessageBox.Show("ETABS model is not attached.", "Error");
-        }
-
-        private void btnPushAllToEtabs_Click(object? sender, EventArgs e)
-        {
-            if (_sapModel == null) { MessageBox.Show("ETABS model is not attached.", "Error"); return; }
-
-            var updater = new EtabsModelUpdater(_sapModel);
-            int ok = 0, fail = 0;
-            var failures = new StringBuilder();
-
-            foreach (var slab in _currentSlabs)
-            {
-                var (success, msg) = updater.PushOptimizedThicknessSilent(slab);
-                if (success) ok++;
-                else { fail++; failures.AppendLine(" • " + msg); }
-            }
-
-            updater.TryRefreshView();
-
-            string summary = $"Pushed {ok} slab(s) successfully.";
-            if (fail > 0) summary += $"\n{fail} slab(s) FAILED:\n{failures}";
-            MessageBox.Show(summary,
-                fail == 0 ? "Push Complete" : "Push Completed with Errors",
-                MessageBoxButtons.OK,
-                fail == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            try { _pluginCallback?.Finish(0); }
+            catch { }
         }
     }
 }

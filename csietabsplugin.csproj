@@ -6,8 +6,8 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>CSiNET8PluginExample1</RootNamespace>
-    <AssemblyName>csinet8plugin</AssemblyName>
+    <RootNamespace>LoadAssignerPlugin</RootNamespace>
+    <AssemblyName>LoadAssigner</AssemblyName>
 
     <!-- PATCH: ETABS 22 is 64-bit only. Building AnyCPU and dropping the DLL
          into ETABS' Plugins folder works, but pinning x64 prevents the wrong
